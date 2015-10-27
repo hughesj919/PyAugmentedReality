@@ -14,7 +14,8 @@ fovx = None
 fovy = None
 fy = None
 fx = None
-principalPoint = None
+principalX = None
+principalY = None
 focalLength = None
 dist_co = None
 cameraMatrix = None
@@ -22,12 +23,16 @@ image_shape = None
 out = None
 spheres = False
 output = False
+width = None
+height = None
 lightZeroPosition = [10.0, 10.0, 10.0, 1.0]
 lightZeroColor = [2.5, 2.5, 2.5, 1]
+near = 1
+far = 500
 
 
 def loadParams(params):
-    global fovx, fovy, aspectRatio, principalPoint, focalLength, dist_co, image_shape, cameraMatrix, fx, fy
+    global fovx, fovy, aspectRatio, principalX, principalY, focalLength, dist_co, image_shape, cameraMatrix, fx, fy
     if os.path.exists(params) and os.path.isfile(params):
         f = open(params)
         fovx = float(f.readline())
@@ -39,7 +44,9 @@ def loadParams(params):
         cameraMatrix[0, 0] = fx
         cameraMatrix[1, 1] = fy
         cameraMatrix[0, 2] = float(f.readline())
+        principalX = cameraMatrix[0, 2]
         cameraMatrix[1, 2] = float(f.readline())
+        principalY = cameraMatrix[1, 2]
         cameraMatrix[2, 2] = 1.0
         print("Camera Matrix")
         print(cameraMatrix)
@@ -122,10 +129,52 @@ def drawAxis(length):
 
     glColor3f(0, 0, 1)
     glVertex3f(0, 0, 0)
-    glVertex3f(0, 0, length)
+    glVertex3f(0, 0, -length)
     glEnd()
 
     glPopAttrib()
+
+#
+# Get the object points
+#
+def getObjPoints():
+    objp = np.zeros((6 * 8, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:8, 0:6].T.reshape(-1, 2)
+    return objp
+
+#
+# Get the object points test
+#
+def getObjPoints2():
+    four_corners_obj = np.zeros((4,3), np.float32)
+    four_corners_obj[0,0] = 0.0
+    four_corners_obj[0,1] = 0.0
+    four_corners_obj[1,0] = 1.0
+    four_corners_obj[1,1] = 0.0
+    four_corners_obj[2,0] = 0.0
+    four_corners_obj[2,1] = 1.0
+    four_corners_obj[3,0] = 1.0
+    four_corners_obj[3,1] = 1.0
+    return four_corners_obj
+
+#
+# Get the image points
+#
+def getImagePoints():
+    ret, corners = cv2.findChessboardCorners(currFrame, (8, 6), flags=cv2.CALIB_CB_FAST_CHECK)
+    if ret:
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        gray = cv2.cvtColor(currFrame, cv2.COLOR_BGR2GRAY)
+        corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        return corners2
+    return None
+#
+# image points test
+#
+def getImagePoints2():
+    four_corners_img = ((600.0, 400.0), (620.0, 400.0), (600.0, 420.0), (620.0, 420.0))
+    four_corners_img = np.reshape(np.asarray(four_corners_img), (4,1,2))
+    return four_corners_img
 
 
 #
@@ -141,11 +190,12 @@ def display():
         flippedImage = cv2.flip(currFrame, 0)
 
         # draw the flipped image, set depth coord to 1.0 (having issue when set exactly to 1.0)
-        glWindowPos3d(0.0, 0.0, 0.99999)
+        glDisable(GL_DEPTH_TEST)
         glDrawPixels(flippedImage.shape[1], flippedImage.shape[0], GL_BGR, GL_UNSIGNED_BYTE, flippedImage.data)
+        glEnable(GL_DEPTH_TEST)
 
         #setup our viewport
-        glViewport(0, 0, flippedImage.shape[1], flippedImage.shape[0])
+        glViewport(0, 0, width, height)
 
         #setup our project matrix
         glMatrixMode(GL_PROJECTION)
@@ -154,55 +204,40 @@ def display():
         #set our projection matrix to perspective based on camera params
 
         # http://kgeorge.github.io/2014/03/08/calculating-opengl-perspective-matrix-from-opencv-intrinsic-matrix/
-        near = 0.5
-        far = 500
-        newCam = np.identity(4)
-        newCam[0][0] = cameraMatrix[0][0]/cameraMatrix[0][2]
-        newCam[0][1] = 0
-        newCam[0][2] = 0
-        newCam[0][3] = 0
+        print("Principal x: "+ str(principalX))
+        print("Principal y: "+ str(principalY))
+        print("fx:"+str(fx))
+        print("fy:"+str(fy))
+        print("height:"+str(height))
+        print("width:"+str(width))
 
-        newCam[1][0] = 0
-        newCam[1][1] = cameraMatrix[1][1] / cameraMatrix[1][2]
-        newCam[1][2] = 0
-        newCam[1][3] = 0
-
-        newCam[2][0] = 0
-        newCam[2][1] = 0
-        newCam[2][2] = -(near+far)/(far-near)
-        newCam[2][3] = -1
-
-        newCam[3][0] = 0
-        newCam[3][1] = 0
-        newCam[3][2] = (-2*near*far)/(far - near)
-        newCam[3][3] = 0
-
-        glLoadMatrixf(newCam)
-
-        #gluPerspective(fovy, cameraMatrix[1][1] / cameraMatrix[0][0], 0.05, 500)
+        glFrustum(-principalX / fx, (width - principalX) / fy, (principalY - height) / fy, principalY / fy, near, far)
 
         #setup our model view matrix
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
+
         ret, corners = cv2.findChessboardCorners(currFrame, (8, 6), flags=cv2.CALIB_CB_FAST_CHECK)
 
         if ret is True:
-            objp = np.zeros((6 * 8, 3), np.float32)
-            objp[:, :2] = np.mgrid[0:8, 0:6].T.reshape(-1, 2)
-
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-            gray = cv2.cvtColor(currFrame, cv2.COLOR_BGR2GRAY)
-            corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            objp = getObjPoints()
+            corners2 = getImagePoints()
+            print(corners2)
+            print(corners2.shape)
+            print(objp.shape)
+            print(objp)
             ret, rotv, tvecs = cv2.solvePnP(objp, corners2, cameraMatrix, dist_co, None, None, 0, cv2.SOLVEPNP_ITERATIVE)
+
             projectedImgPts, _ = cv2.projectPoints(objp, rotv, tvecs, cameraMatrix, dist_co)
             j = 0
-
             for i in projectedImgPts:
                 cv2.circle(currFrame, (i[0][0], i[0][1]), 2, (0, 255, 0), -1)
                 j = j+1
             currFrame = cv2.flip(currFrame, 0)
+            glDisable(GL_DEPTH_TEST)
             glDrawPixels(currFrame.shape[1], currFrame.shape[0], GL_BGR, GL_UNSIGNED_BYTE, currFrame.data)
+            glEnable(GL_DEPTH_TEST)
 
 
             if ret is True:
@@ -217,6 +252,7 @@ def display():
                 matrix = np.dot(newMat, matrix)
                 matrix = matrix.T
                 glLoadMatrixf(matrix)
+                drawAxis(1.0)
 
                 if spheres:
                     glPushMatrix()
@@ -271,7 +307,7 @@ def idle():
 # Main Camera Calibration and OpenGL loop
 #
 def main():
-
+    global width, height
     args, params = getopt.getopt(sys.argv[1:], '', ['video_name='])
     args = dict(args)
     video_name = args.get('--video_name')
@@ -281,6 +317,8 @@ def main():
     glutInit(sys.argv)
     glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
     print(image_shape)
+    width = image_shape[1]
+    height = image_shape[0]
     glutInitWindowSize(image_shape[1], image_shape[0])
 
     glutCreateWindow("OpenGL / OpenCV Example")
